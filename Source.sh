@@ -34,6 +34,7 @@ menu_options=(
     "安装常用软件包"
     "设置局域网代理"
     "还原代理设置"
+    "查看代理状态"
 )
 
 commands=(
@@ -43,6 +44,7 @@ commands=(
     ["安装常用软件包"]="install_common_software"
     ["设置局域网代理"]="setup_lan_proxy"
     ["还原代理设置"]="restore_proxy_settings"
+    ["查看代理状态"]="check_proxy_status"
 
 )
 
@@ -299,7 +301,7 @@ restore_proxy_settings() {
     restored_files=()
     failed_operations=()
     
-    # 1. 删除系统环境变量代理文件
+    # 1. 删除系统环境变量代理文件 (/etc/environment.d/proxy.conf)
     if [ -f "/etc/environment.d/proxy.conf" ]; then
         if rm -f /etc/environment.d/proxy.conf; then
             green "✓ 删除系统代理配置文件"
@@ -311,6 +313,28 @@ restore_proxy_settings() {
     else
         yellow "系统代理配置文件不存在，跳过"
     fi
+    
+    # 1.5. 清理 /etc/environment 中的代理设置（如果存在）
+    if [ -f "/etc/environment" ]; then
+        if grep -q "_proxy=" /etc/environment; then
+            # 备份原文件
+            cp /etc/environment /etc/environment.bak.$(date +%Y%m%d_%H%M%S)
+            # 删除代理相关行
+            if sed -i '/http_proxy=/d; /https_proxy=/d; /ftp_proxy=/d; /no_proxy=/d; /HTTP_PROXY=/d; /HTTPS_PROXY=/d; /FTP_PROXY=/d; /NO_PROXY=/d' /etc/environment; then
+                green "✓ 清理 /etc/environment 中的代理设置"
+                restored_files+=("/etc/environment 代理设置")
+            else
+                red "✗ 清理 /etc/environment 中的代理设置失败"
+                failed_operations+=("清理 /etc/environment 代理设置")
+            fi
+        fi
+    fi
+    
+    # 1.6. 取消当前会话的代理环境变量
+    unset http_proxy https_proxy ftp_proxy no_proxy
+    unset HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY
+    green "✓ 取消当前会话代理环境变量"
+    restored_files+=("当前会话代理变量")
     
     # 2. 删除APT代理配置
     if [ -f "/etc/apt/apt.conf.d/95proxy" ]; then
@@ -436,6 +460,137 @@ restore_proxy_settings() {
         green "备份文件清理完成"
     else
         yellow "备份文件已保留，如需要可手动删除"
+    fi
+}
+
+# 查看代理状态
+check_proxy_status() {
+    green "==================== 代理状态检查 ===================="
+    
+    proxy_found=false
+    
+    # 1. 检查系统环境变量代理文件
+    echo
+    blue "1. 系统环境变量代理配置:"
+    if [ -f "/etc/environment.d/proxy.conf" ]; then
+        red "  ✗ 发现系统代理配置文件: /etc/environment.d/proxy.conf"
+        yellow "    内容预览:"
+        head -5 /etc/environment.d/proxy.conf | sed 's/^/      /'
+        proxy_found=true
+    else
+        green "  ✓ 系统代理配置文件不存在"
+    fi
+    
+    # 2. 检查 /etc/environment
+    if [ -f "/etc/environment" ] && grep -q "_proxy=" /etc/environment; then
+        red "  ✗ /etc/environment 中发现代理设置:"
+        grep "_proxy=" /etc/environment | sed 's/^/      /'
+        proxy_found=true
+    else
+        green "  ✓ /etc/environment 中无代理设置"
+    fi
+    
+    # 3. 检查APT代理配置
+    echo
+    blue "2. APT包管理器代理配置:"
+    if [ -f "/etc/apt/apt.conf.d/95proxy" ]; then
+        red "  ✗ 发现APT代理配置文件: /etc/apt/apt.conf.d/95proxy"
+        yellow "    内容预览:"
+        cat /etc/apt/apt.conf.d/95proxy | sed 's/^/      /'
+        proxy_found=true
+    else
+        green "  ✓ APT代理配置文件不存在"
+    fi
+    
+    # 4. 检查Git代理设置
+    echo
+    blue "3. Git代理配置:"
+    git_http_proxy=$(git config --global --get http.proxy 2>/dev/null)
+    git_https_proxy=$(git config --global --get https.proxy 2>/dev/null)
+    
+    if [ -n "$git_http_proxy" ]; then
+        red "  ✗ Git HTTP代理: $git_http_proxy"
+        proxy_found=true
+    else
+        green "  ✓ Git HTTP代理未设置"
+    fi
+    
+    if [ -n "$git_https_proxy" ]; then
+        red "  ✗ Git HTTPS代理: $git_https_proxy"
+        proxy_found=true
+    else
+        green "  ✓ Git HTTPS代理未设置"
+    fi
+    
+    # 5. 检查用户bashrc文件
+    echo
+    blue "4. 用户Shell代理配置:"
+    if [ -n "$SUDO_USER" ]; then
+        user_home="/home/$SUDO_USER"
+        bashrc_file="$user_home/.bashrc"
+        
+        if [ -f "$bashrc_file" ] && grep -q "# Proxy settings" "$bashrc_file"; then
+            red "  ✗ 用户bashrc中发现代理设置:"
+            grep -A 10 "# Proxy settings" "$bashrc_file" | head -10 | sed 's/^/      /'
+            proxy_found=true
+        else
+            green "  ✓ 用户bashrc中无代理设置"
+        fi
+    else
+        yellow "  ? 无法检查用户bashrc（非sudo执行）"
+    fi
+    
+    # 6. 检查当前会话环境变量
+    echo
+    blue "5. 当前会话代理环境变量:"
+    current_proxies=()
+    
+    [ -n "$http_proxy" ] && current_proxies+=("http_proxy=$http_proxy")
+    [ -n "$https_proxy" ] && current_proxies+=("https_proxy=$https_proxy")
+    [ -n "$ftp_proxy" ] && current_proxies+=("ftp_proxy=$ftp_proxy")
+    [ -n "$HTTP_PROXY" ] && current_proxies+=("HTTP_PROXY=$HTTP_PROXY")
+    [ -n "$HTTPS_PROXY" ] && current_proxies+=("HTTPS_PROXY=$HTTPS_PROXY")
+    [ -n "$FTP_PROXY" ] && current_proxies+=("FTP_PROXY=$FTP_PROXY")
+    
+    if [ ${#current_proxies[@]} -gt 0 ]; then
+        red "  ✗ 当前会话中发现代理环境变量:"
+        for proxy in "${current_proxies[@]}"; do
+            echo "      $proxy"
+        done
+        proxy_found=true
+    else
+        green "  ✓ 当前会话无代理环境变量"
+    fi
+    
+    # 7. 网络连接测试（可选）
+    echo
+    blue "6. 网络连接测试:"
+    echo -n "  测试直连访问 www.baidu.com ... "
+    if timeout 5 curl -s --max-time 3 http://www.baidu.com > /dev/null 2>&1; then
+        green "成功"
+    else
+        red "失败"
+    fi
+    
+    echo -n "  测试直连访问 www.google.com ... "
+    if timeout 5 curl -s --max-time 3 http://www.google.com > /dev/null 2>&1; then
+        yellow "成功 (可能仍在使用代理)"
+        proxy_found=true
+    else
+        green "失败 (正常，无代理)"
+    fi
+    
+    # 8. 总结
+    echo
+    green "==================== 检查结果总结 ===================="
+    if [ "$proxy_found" = true ]; then
+        red "⚠️  发现残留的代理配置！"
+        yellow "建议执行以下操作："
+        yellow "  1. 使用脚本的'还原代理设置'功能"
+        yellow "  2. 重新登录或重启系统"
+        yellow "  3. 再次运行此检查确认"
+    else
+        green "🎉 未发现代理配置，系统已完全清除代理设置！"
     fi
 }
 
