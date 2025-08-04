@@ -330,11 +330,41 @@ restore_proxy_settings() {
         fi
     fi
     
-    # 1.6. 取消当前会话的代理环境变量
+    # 1.6. 取消当前会话的代理环境变量并重新加载systemd环境
     unset http_proxy https_proxy ftp_proxy no_proxy
     unset HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY
     green "✓ 取消当前会话代理环境变量"
     restored_files+=("当前会话代理变量")
+    
+    # 1.7. 重新加载systemd用户环境变量 (针对 /etc/environment.d/ 的更改)
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl --user daemon-reload 2>/dev/null; then
+            green "✓ 重新加载systemd用户服务"
+            restored_files+=("systemd用户环境")
+        else
+            yellow "systemd用户服务重载失败或不适用"
+        fi
+        
+        # 尝试重新加载系统级环境
+        if systemctl daemon-reload 2>/dev/null; then
+            green "✓ 重新加载systemd系统服务"
+        else
+            yellow "systemd系统服务重载失败或不适用"
+        fi
+    fi
+    
+    # 1.8. 强制清除当前进程树的环境变量
+    green "✓ 清除进程环境变量"
+    export http_proxy=""
+    export https_proxy=""
+    export ftp_proxy=""
+    export no_proxy=""
+    export HTTP_PROXY=""
+    export HTTPS_PROXY=""
+    export FTP_PROXY=""
+    export NO_PROXY=""
+    unset http_proxy https_proxy ftp_proxy no_proxy
+    unset HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY
     
     # 2. 删除APT代理配置
     if [ -f "/etc/apt/apt.conf.d/95proxy" ]; then
@@ -440,9 +470,15 @@ restore_proxy_settings() {
     echo
     if [ ${#failed_operations[@]} -eq 0 ]; then
         green "🎉 所有代理设置已成功还原！"
-        yellow "建议执行以下操作使更改完全生效:"
-        yellow "  1. 重新登录或执行: source ~/.bashrc"
-        yellow "  2. 重启系统（可选）"
+        yellow "⚠️  重要提示："
+        yellow "  由于系统级环境变量的特殊性，可能需要以下操作之一："
+        yellow "  1. 重新登录用户会话（推荐）"
+        yellow "  2. 重启系统"
+        yellow "  3. 在新的shell中执行: env | grep -i proxy"
+        yellow "  4. 如果仍有残留，手动执行:"
+        yellow "     sudo systemctl restart systemd-logind"
+        echo
+        yellow "系统级代理变量可能会持续到会话结束，这是正常现象。"
     else
         yellow "部分设置还原失败，请手动检查相关配置文件"
     fi
